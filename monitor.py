@@ -46,6 +46,12 @@ def main():
         }
     )
     departures = data.get('payload', {}).get('departures', [])
+    for dep in departures:
+    print(
+        dep.get('plannedDateTime'),
+        '| Richting:', dep.get('direction'),
+        '| Route:', dep.get('routeStations')
+    )
     today = now.date()
     matches = []
     for dep in departures:
