@@ -38,8 +38,13 @@ def main():
     api_key = os.environ['NS_API_KEY']
     topic = os.environ['NTFY_TOPIC']
     params = urlencode({'station': STATION, 'maxJourneys': 100})
-data = get_json('https://gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures?' + params,
-                {'Ocp-Apim-Subscription-Key': api_key, 'Accept': 'application/json'})
+    data = get_json(
+        'https://gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures?' + params,
+        {
+            'Ocp-Apim-Subscription-Key': api_key,
+            'Accept': 'application/json'
+        }
+    )
     departures = data.get('payload', {}).get('departures', [])
     today = now.date()
     matches = []
