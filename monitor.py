@@ -1,6 +1,6 @@
 
 #!/usr/bin/env python3
-"""Treinmonitor: Tiel 07:53, iedere maandag."""
+"""Treinmonitor Tiel 07:53 via Utrecht Centraal."""
 
 import json
 import os
@@ -22,12 +22,72 @@ API_URL = (
 )
 
 
-def get_json(url, headers):
-    with urlopen(Request(url, headers=headers), timeout=20) as response:
-        return json.load(response)
+def parse_time(value):
+    return datetime.fromisoformat(
+        value.replace("Z", "+00:00")
+    ).astimezone(TZ)
 
 
-def send_notification(topic, title, body):
+def get_departures():
+    params = urlencode({
+        "station": STATION,
+        "maxJourneys": 100,
+    })
+    request = Request(
+        API_URL + "?" + params,
+        headers={
+            "Ocp-Apim-Subscription-Key":
+                os.environ["NS_API_KEY"],
+            "Accept": "application/json",
+        },
+    )
+    with urlopen(request, timeout=20) as response:
+        data = json.load(response)
+
+    departures = data.get("payload", {}).get(
+        "departures", []
+    )
+    print("NS API bereikbaar:", len(departures))
+    return departures
+
+
+def find_train(departures, now):
+    for dep in departures:
+        planned = dep.get("plannedDateTime")
+        if not planned:
+            continue
+
+        dt = parse_time(planned)
+
+        if dt.date() != now.date():
+            continue
+
+        if dt.strftime("%H:%M") != DEPARTURE:
+            continue
+
+        direction = str(
+            dep.get("direction") or ""
+        ).lower()
+
+        stations = dep.get("routeStations") or []
+        route = " ".join(
+            str(station.get("mediumName") or "")
+            for station in stations
+            if isinstance(station, dict)
+        ).lower()
+
+        if (
+            "utrecht" in direction
+            or "utrecht" in route
+            or "8400621" in str(stations)
+        ):
+            return dep
+
+    return None
+
+
+def send_notification(title, body):
+    topic = os.environ["NTFY_TOPIC"]
     request = Request(
         "https://ntfy.sh/" + topic,
         data=body.encode("utf-8"),
@@ -39,77 +99,49 @@ def send_notification(topic, title, body):
         method="POST",
     )
     with urlopen(request, timeout=20) as response:
-        print("ntfy response:", response.status)
+        print("Push verzonden:", response.status)
 
 
-def get_departures():
-    api_key = os.environ["NS_API_KEY"]
-    params = urlencode({
-        "station": STATION,
-        "maxJourneys": 100,
-    })
-    data = get_json(
-        API_URL + "?" + params,
-        {
-            "Ocp-Apim-Subscription-Key": api_key,
-            "Accept": "application/json",
-        },
+def load_state():
+    if STATE.exists():
+        try:
+            return json.loads(
+                STATE.read_text(encoding="utf-8")
+            )
+        except (ValueError, OSError):
+            pass
+    return {}
+
+
+def save_state(state):
+    STATE.write_text(
+        json.dumps(state),
+        encoding="utf-8",
     )
-    departures = data.get("payload", {}).get("departures", [])
-    print("NS API bereikbaar. Vertrekken:", len(departures))
-    return departures
 
 
-def find_train(departures, now):
-    matches = []
-
-    for dep in departures:
-        planned = dep.get("plannedDateTime")
-        if not planned:
-            continue
-
-        dt = datetime.fromisoformat(
-            planned.replace("Z", "+00:00")
-        ).astimezone(TZ)
-
-        if dt.date() != now.date():
-            continue
-
-        if dt.strftime("%H:%M") != DEPARTURE:
-            continue
-
-        direction = str(dep.get("direction") or "").lower()
-        route = str(dep.get("routeStations") or "").lower()
-
-        if "utrecht" not in direction and "utrecht" not in route:
-            continue
-
-        matches.append(dep)
-
-    return matches[0] if matches else None
-
-
-def check_train(departures, now):
+def check_train(departures, now, notify=True):
     dep = find_train(departures, now)
 
     if dep is None:
-        print("Geen passende trein gevonden.")
-        print("Dit betekent niet automatisch dat de trein uitvalt.")
+        print("Trein 07:53 niet gevonden.")
+        print("Geen melding: uitval niet bevestigd.")
         return
 
-    planned = datetime.fromisoformat(
-        dep["plannedDateTime"].replace("Z", "+00:00")
-    )
-    actual = datetime.fromisoformat(
-        (dep.get("actualDateTime") or dep["plannedDateTime"])
-        .replace("Z", "+00:00")
+    planned = parse_time(dep["plannedDateTime"])
+    expected = parse_time(
+        dep.get("expectedDateTime")
+        or dep.get("actualDateTime")
+        or dep["plannedDateTime"]
     )
 
     delay = max(
         0,
-        round((actual - planned).total_seconds() / 60)
+        round(
+            (expected - planned).total_seconds() / 60
+        ),
     )
-    cancelled = bool(dep.get("cancelled"))
+    cancelled = dep.get("cancelled") is True
 
     status = (
         "cancelled" if cancelled
@@ -117,75 +149,92 @@ def check_train(departures, now):
         else "ok"
     )
 
-    print("Train status:", status)
+    print("Trein gevonden:", DEPARTURE)
+    print("Richting:", dep.get("direction"))
+    print("Verwacht vertrek:", expected)
+    print("Vertraging:", delay, "minuten")
+    print("Uitgevallen:", cancelled)
+    print("Status:", status)
 
-    previous = {}
-    if STATE.exists():
-        try:
-            previous = json.loads(
-                STATE.read_text(encoding="utf-8")
-            )
-        except (ValueError, OSError):
-            pass
+    if not notify:
+        print("Testmodus: geen push verstuurd.")
+        return
 
+    state = load_state()
     key = now.date().isoformat()
+    previous = state.get(key)
+
+    if status == previous:
+        print("Status ongewijzigd; geen melding.")
+        return
 
     if status == "ok":
-        previous[key] = "ok"
-
-    elif previous.get(key) != status:
-        topic = os.environ["NTFY_TOPIC"]
-
-        if cancelled:
-            title = "Trein Tiel 07:53 uitgevallen"
-            body = (
-                "NS meldt dat jouw trein is uitgevallen. "
-                "Controleer je reis."
-            )
-        else:
-            title = f"Trein 07:53: {delay} min vertraging"
-            body = (
-                f"Verwacht vertrek uit Tiel: "
-                f"{actual.astimezone(TZ):%H:%M}."
-            )
-
-        send_notification(topic, title, body)
-        previous[key] = status
-
+        print("Geen vertraging van 3+ minuten.")
+    elif cancelled:
+        send_notification(
+            "Trein Tiel 07:53 uitgevallen",
+            "NS meldt dat de trein is uitgevallen. "
+            "Controleer je reis.",
+        )
     else:
-        print("Status ongewijzigd; geen dubbele melding.")
+        send_notification(
+            f"Trein 07:53: {delay} min vertraging",
+            f"Verwacht vertrek uit Tiel: "
+            f"{expected:%H:%M}.",
+        )
 
-    STATE.write_text(
-        json.dumps({key: previous[key]}),
-        encoding="utf-8",
-    )
+    # Bewaar alleen de status van vandaag.
+    save_state({key: status})
+
+
+def test_matching():
+    now = datetime.now(TZ)
+    sample = {
+        "plannedDateTime":
+            now.strftime("%Y-%m-%dT07:53:00%z"),
+        "direction": "Den Haag Centraal",
+        "routeStations": [
+            {
+                "uicCode": "8400621",
+                "mediumName": "Utrecht C.",
+            }
+        ],
+    }
+    assert find_train([sample], now) == sample
+    print("Treinherkenning geslaagd.")
+    print("07:53 via Utrecht C. wordt herkend.")
 
 
 def main():
     now = datetime.now(TZ)
     mode = sys.argv[1] if len(sys.argv) > 1 else "monitor"
 
-    print("Local time:", now.isoformat())
-    print("Mode:", mode)
+    print("Lokale tijd:", now.isoformat())
+    print("Modus:", mode)
+
+    if mode == "test-match":
+        test_matching()
+        return
 
     if mode == "test-push":
         send_notification(
-            os.environ["NTFY_TOPIC"],
             "Test treinmonitor",
-            "GitHub kan meldingen naar je Android sturen!",
+            "GitHub kan meldingen versturen!",
         )
         return
 
     if mode == "test-api":
         departures = get_departures()
-        print("Actuele vertrekken uit Tiel:")
-
         for dep in departures:
             print(
                 dep.get("plannedDateTime"),
-                "| Richting:", dep.get("direction"),
-                "| Route:", dep.get("routeStations"),
+                dep.get("direction"),
+                dep.get("routeStations"),
             )
+        return
+
+    if mode == "test-live":
+        check_train(get_departures(), now, notify=False)
         return
 
     if mode != "monitor":
@@ -194,11 +243,10 @@ def main():
     if now.weekday() != 0 or not (
         "07:05" <= now.strftime("%H:%M") <= "07:53"
     ):
-        print("Outside monitoring window; skipping.")
+        print("Buiten controleperiode; overgeslagen.")
         return
 
-    departures = get_departures()
-    check_train(departures, now)
+    check_train(get_departures(), now)
 
 
 if __name__ == "__main__":
