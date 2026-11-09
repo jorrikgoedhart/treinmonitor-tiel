@@ -45,13 +45,15 @@ def main():
             'Accept': 'application/json'
         }
     )
-    departures = data.get('payload', {}).get('departures', [])
+  departures = data.get('payload', {}).get('departures', [])
+
+    # Tijdelijke test: toon alle actuele vertrekken
     for dep in departures:
-    print(
-        dep.get('plannedDateTime'),
-        '| Richting:', dep.get('direction'),
-        '| Route:', dep.get('routeStations')
-    )
+        print(
+            dep.get('plannedDateTime'),
+            '| Richting:', dep.get('direction'),
+            '| Route:', dep.get('routeStations')
+        )
     today = now.date()
     matches = []
     for dep in departures:
