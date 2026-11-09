@@ -31,9 +31,10 @@ def main():
     now = datetime.now(TZ)
     print('Local time:', now.isoformat())
     # GitHub cron is UTC. This guard handles CET/CEST automatically.
-    if now.weekday() != 0 or not ('07:05' <= now.strftime('%H:%M') <= '07:53'):
-        print('Outside monitoring window; skipping.')
-        return
+# Tijdcontrole tijdelijk uitgeschakeld voor test
+# if now.weekday() != 0 or not ('07:05' <= now.strftime('%H:%M') <= '07:53'):
+#     print('Outside monitoring window; skipping.')
+#     return
     api_key = os.environ['NS_API_KEY']
     topic = os.environ['NTFY_TOPIC']
     params = urlencode({'station': STATION, 'maxJourneys': 100})
