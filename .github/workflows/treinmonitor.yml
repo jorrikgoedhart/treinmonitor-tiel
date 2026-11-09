@@ -1,0 +1,36 @@
+name: Treinmonitor Tiel 07:53
+on:
+  schedule:
+    # Every 5 minutes on Monday; local time window is checked in Python.
+    # 05-07 UTC covers 07:05-07:53 in both winter and summer time.
+    - cron: '*/5 5-7 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: treinmonitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache/restore@v4
+        with:
+          path: monitor_state.json
+          key: train-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            train-state-
+      - name: Check NS departures
+        env:
+          NS_API_KEY: ${{ secrets.NS_API_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python monitor.py
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: monitor_state.json
+          key: train-state-${{ github.run_id }}-${{ github.run_attempt }}
